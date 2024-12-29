@@ -31,47 +31,35 @@ class Cursor:
                 yield row
 
     async def _execute(self, fn, *args, **kwargs):
-        """공유 연결의 스레드에서 주어진 함수를 실행합니다."""
         return await self._conn._execute(fn, *args, **kwargs)
 
-    async def execute(
-        self, sql: str, parameters: Optional[Iterable[Any]] = None
-    ) -> "Cursor":
-        """쿼리를 실행합니다."""
+    async def execute(self, sql: str, parameters: Optional[Iterable[Any]] = None) -> "Cursor":
         if parameters is None:
             parameters = []
         await self._execute(self._cursor.execute, sql, parameters)
         return self
 
-    async def executemany(
-        self, sql: str, parameters: Iterable[Iterable[Any]]
-    ) -> "Cursor":
-        """다중 쿼리를 실행합니다."""
+    async def executemany(self, sql: str, parameters: Iterable[Iterable[Any]]) -> "Cursor":
         await self._execute(self._cursor.executemany, sql, parameters)
         return self
 
     async def executescript(self, sql_script: str) -> "Cursor":
-        """사용자 스크립트를 실행합니다."""
         await self._execute(self._cursor.executescript, sql_script)
         return self
 
     async def fetchone(self) -> Optional[sqlite3.Row]:
-        """단일 행을 가져옵니다."""
         return await self._execute(self._cursor.fetchone)
 
+    async def fetchall(self) -> Iterable[sqlite3.Row]:
+        return await self._execute(self._cursor.fetchall)
+
     async def fetchmany(self, size: Optional[int] = None) -> Iterable[sqlite3.Row]:
-        """`cursor.arraysize` 개수까지 행을 가져옵니다."""
         args: Tuple[int, ...] = ()
         if size is not None:
             args = (size,)
         return await self._execute(self._cursor.fetchmany, *args)
 
-    async def fetchall(self) -> Iterable[sqlite3.Row]:
-        """모든 행을 가져옵니다."""
-        return await self._execute(self._cursor.fetchall)
-
     async def close(self) -> None:
-        """커서를 닫습니다."""
         await self._execute(self._cursor.close)
 
     @property

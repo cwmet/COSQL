@@ -1,6 +1,3 @@
-# Copyright 2024 Comet
-# Licensed under the MIT license
-
 from functools import wraps
 from typing import Any, AsyncContextManager, Callable, Coroutine, Generator, TypeVar
 from .cursor import Cursor

@@ -1,6 +1,3 @@
-# Copyright 2024 Comet
-# Licensed under the MIT license
-
 import asyncio
 import logging
 import sqlite3
@@ -30,25 +27,17 @@ LOG = logging.getLogger("aiosqlite")
 IsolationLevel = Optional[Literal["DEFERRED", "IMMEDIATE", "EXCLUSIVE"]]
 
 def set_result(fut: asyncio.Future, result: Any) -> None:
-    """설정되지 않은 항목에 대해 차후 결과를 설정합니다."""
     if not fut.done():
         fut.set_result(result)
 
-
 def set_exception(fut: asyncio.Future, e: BaseException) -> None:
-    """설정되지 않은 항목에 대해 차후 예외를 설정합니다."""
     if not fut.done():
         fut.set_exception(e)
 
 _STOP_RUNNING_SENTINEL = object()
 
 class Connection(Thread):
-    def __init__(
-        self,
-        connector: Callable[[], sqlite3.Connection],
-        iter_chunk_size: int,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
-    ) -> None:
+    def __init__(self, connector: Callable[[], sqlite3.Connection], iter_chunk_size: int, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         super().__init__()
         self._running = True
         self._connection: Optional[sqlite3.Connection] = None
@@ -73,24 +62,8 @@ class Connection(Thread):
 
         return self._connection
 
-    def _execute_insert(self, sql: str, parameters: Any) -> Optional[sqlite3.Row]:
-        cursor = self._conn.execute(sql, parameters)
-        cursor.execute("SELECT last_insert_rowid()")
-        return cursor.fetchone()
-
-    def _execute_FetchAll(self, sql: str, parameters: Any) -> Iterable[sqlite3.Row]:
-        cursor = self._conn.execute(sql, parameters)
-        return cursor.fetchall()
-    
-    def _execute_Fetch(self, sql: str, parameters: Any) -> Iterable[sqlite3.Row]:
-        cursor = self._conn.execute(sql, parameters)
-        return cursor.fetchone()
-
     def run(self) -> None:
-        """
-        별도 스레드에서 함수 호출을 실행합니다.
-        """
-        while True: # 모든 대기열 항목이 처리될 때까지 계속 실행
+        while True:
             tx_item = self._tx.get()
             if tx_item is _STOP_RUNNING_SENTINEL:
                 break
@@ -101,12 +74,11 @@ class Connection(Thread):
                 result = function()
                 LOG.debug("operation %s completed", function)
                 future.get_loop().call_soon_threadsafe(set_result, future, result)
-            except BaseException as e:  # noqa B036
+            except BaseException as e:
                 LOG.debug("returning exception %s", e)
                 future.get_loop().call_soon_threadsafe(set_exception, future, e)
 
     async def _execute(self, fn, *args, **kwargs):
-        """인수를 포함해 함수를 실행 대기열에 넣습니다."""
         if not self._running or not self._connection:
             raise ValueError("Connection closed")
 
@@ -117,8 +89,43 @@ class Connection(Thread):
 
         return await future
 
+    async def execute(
+        self,
+        sql: str,
+        parameters: Optional[Iterable[Any]] = None,
+        fetch: Literal[0, 1, 2] = 0,
+    ) -> Union[sqlite3.Row, Iterable[sqlite3.Row], None]:
+        if parameters is None:
+            parameters = []
+
+        def query_execution():
+            cursor = self._conn.execute(sql, parameters)
+            if fetch == 1:
+                return cursor.fetchone()
+            elif fetch == 2:
+                return cursor.fetchall()
+            return cursor
+
+        return await self._execute(query_execution)
+
+    async def executemany(self, sql: str, parameters: Iterable[Iterable[Any]]) -> None:
+        await self._execute(self._conn.executemany, sql, parameters)
+
+    async def executescript(self, sql_script: str) -> None:
+        await self._execute(self._conn.executescript, sql_script)
+
+    async def execute_insert(self, sql: str, parameters: Optional[Iterable[Any]] = None) -> Optional[sqlite3.Row]:
+        if parameters is None:
+            parameters = []
+
+        def insert_execution():
+            cursor = self._conn.execute(sql, parameters)
+            cursor.execute("SELECT last_insert_rowid()")
+            return cursor.fetchone()
+
+        return await self._execute(insert_execution)
+
     async def _connect(self) -> "Connection":
-        """실제 sqlite 데이터베이스에 연결합니다."""
         if self._connection is None:
             try:
                 future = asyncio.get_event_loop().create_future()
@@ -143,23 +150,17 @@ class Connection(Thread):
 
     @contextmanager
     async def cursor(self) -> Cursor:
-        """SQLite3 커서 객체를 래핑하는 COSQL 커서를 만듭니다."""
         return Cursor(self, await self._execute(self._conn.cursor))
 
     async def commit(self) -> None:
-        """현재 트랜잭션을 적용합니다."""
         await self._execute(self._conn.commit)
 
     async def rollback(self) -> None:
-        """현재 트랜잭션을 되돌립니다."""
         await self._execute(self._conn.rollback)
 
     async def close(self) -> None:
-        """대기 중인 쿼리/커서를 완료하고 연결을 닫습니다."""
-
         if self._connection is None:
             return
-
         try:
             await self._execute(self._conn.close)
         except Exception:
@@ -170,67 +171,44 @@ class Connection(Thread):
             self._connection = None
 
     @contextmanager
-    async def execute(
-        self, sql: str, parameters: Optional[Iterable[Any]] = None
-    ) -> Cursor:
-        """커서를 생성하고 주어진 쿼리를 실행합니다."""
+    async def execute(self, sql: str, parameters: Optional[Iterable[Any]] = None) -> Cursor:
         if parameters is None:
             parameters = []
         cursor = await self._execute(self._conn.execute, sql, parameters)
         return Cursor(self, cursor)
 
     @contextmanager
-    async def execute_insert(
-        self, sql: str, parameters: Optional[Iterable[Any]] = None
-    ) -> Optional[sqlite3.Row]:
-        """마지막으로 삽입된 ROW를 가져옵니다."""
+    async def execute_insert(self, sql: str, parameters: Optional[Iterable[Any]] = None) -> Optional[sqlite3.Row]:
         if parameters is None:
             parameters = []
         return await self._execute(self._execute_insert, sql, parameters)
 
     @contextmanager
-    async def execute_Fetch(
-        self, sql: str, parameters: Optional[Iterable[Any]] = None
-    ) -> Iterable[sqlite3.Row]:
-        """쿼리를 실행하고 하나의 데이터를 반환합니다."""
+    async def execute_fetchone(self, sql: str, parameters: Optional[Iterable[Any]] = None) -> Iterable[sqlite3.Row]:
         if parameters is None:
             parameters = []
-        return await self._execute(self._execute_Fetch, sql, parameters)
+        return await self._execute(self._execute_fetchone, sql, parameters)
     
     @contextmanager
-    async def execute_FetchAll(
-        self, sql: str, parameters: Optional[Iterable[Any]] = None
-    ) -> Iterable[sqlite3.Row]:
-        """쿼리를 실행하고 모든 데이터를 반환합니다."""
+    async def execute_fetchall(self, sql: str, parameters: Optional[Iterable[Any]] = None) -> Iterable[sqlite3.Row]:
         if parameters is None:
             parameters = []
-        return await self._execute(self._execute_FetchAll, sql, parameters)
+        return await self._execute(self._execute_fetchall, sql, parameters)
     
     @contextmanager
-    async def executemany(
-        self, sql: str, parameters: Iterable[Iterable[Any]]
-    ) -> Cursor:
-        """커서를 생성하고 주어진 다중 쿼리를 실행합니다."""
+    async def executemany(self, sql: str, parameters: Iterable[Iterable[Any]]) -> Cursor:
         cursor = await self._execute(self._conn.executemany, sql, parameters)
         return Cursor(self, cursor)
 
     @contextmanager
     async def executescript(self, sql_script: str) -> Cursor:
-        """커서를 생성하고 사용자 스크립트를 실행합니다."""
         cursor = await self._execute(self._conn.executescript, sql_script)
         return Cursor(self, cursor)
 
     async def interrupt(self) -> None:
-        """보류 중인 쿼리를 중단합니다."""
         return self._conn.interrupt()
 
-    async def create_function(
-        self, name: str, num_params: int, func: Callable, deterministic: bool = False
-    ) -> None:
-        """
-        나중에 SQL 문에서 사용할 수 있는 사용자 정의 함수를 만듭니다. 
-        쿼리 실행이 발생하는 동일한 스레드 내에서 실행해야 하므로 연결에 대해 직접 실행하는 대신 `run` 함수로 연기합니다.
-        """
+    async def create_function(self, name: str, num_params: int, func: Callable, deterministic: bool = False) -> None:
         await self._execute(
             self._conn.create_function,
             name,
@@ -272,23 +250,18 @@ class Connection(Thread):
         return self._conn.total_changes
 
     async def enable_load_extension(self, value: bool) -> None:
-        await self._execute(self._conn.enable_load_extension, value)  # type: ignore
+        await self._execute(self._conn.enable_load_extension, value)
 
     async def load_extension(self, path: str):
-        await self._execute(self._conn.load_extension, path)  # type: ignore
+        await self._execute(self._conn.load_extension, path)
 
-    async def set_progress_handler(
-        self, handler: Callable[[], Optional[int]], n: int
-    ) -> None:
+    async def set_progress_handler(self, handler: Callable[[], Optional[int]], n: int) -> None:
         await self._execute(self._conn.set_progress_handler, handler, n)
 
     async def set_trace_callback(self, handler: Callable) -> None:
         await self._execute(self._conn.set_trace_callback, handler)
 
     async def iterdump(self) -> AsyncIterator[str]:
-        """
-        SQL 텍스트 형식으로 데이터베이스를 덤프하기 위한 비동기 반복자를 반환합니다.
-        """
         dump_queue: Queue = Queue()
 
         def dumper():
@@ -330,10 +303,7 @@ class Connection(Thread):
         name: str = "main",
         sleep: float = 0.250,
     ) -> None:
-        """
-        현재 데이터베이스를 대상 데이터베이스에 백업합니다.
-        표준 sqlite3 또는 aiosqlite Connection 객체를 대상으로 사용합니다.
-        """
+        
         if isinstance(target, Connection):
             target = target._conn
 
@@ -347,14 +317,13 @@ class Connection(Thread):
         )
 
 def connect(
-    database: Union[str, Path],
-    *,
-    iter_chunk_size=64,
-    loop: Optional[asyncio.AbstractEventLoop] = None,
-    **kwargs: Any,
+    database: Union[str, Path], 
+    *, 
+    iter_chunk_size=64, 
+    loop: Optional[asyncio.AbstractEventLoop] = None, 
+    ac: bool = True,
+    **kwargs: Any
 ) -> Connection:
-    """SQLite 데이터베이스에 대한 연결 프록시를 생성하여 반환합니다."""
-
     if loop is not None:
         warn(
             "aiosqlite.connect() no longer uses the `loop` parameter",
@@ -369,6 +338,6 @@ def connect(
         else:
             loc = str(database)
 
-        return sqlite3.connect(loc, **kwargs, autocommit=True)
+        return sqlite3.connect(loc, **kwargs, autocommit=ac)
 
     return Connection(connector, iter_chunk_size)

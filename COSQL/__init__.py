@@ -1,9 +1,3 @@
-# Copyright 2022 Amethyst Reese
-# Licensed under the MIT license
-# Forked By Comet
-
-"""표준 SQLite3 모듈에 대한 asyncio 브릿지 + 추가 기능"""
-
 from sqlite3 import (
     DatabaseError,
     Error,
